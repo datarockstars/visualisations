@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KNN Régression — Visualisation interactive</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #ffffff;
+    --bg2:       #f5f4f0;
+    --border:    rgba(0,0,0,0.12);
+    --text:      #3d3d3a;
+    --muted:     #888780;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+
+    --col-train:    #0F6E56;
+    --col-neighbor: #BA7517;
+    --col-query:    #534AB7;
+    --col-pred:     #A32D2D;
+    --col-dist:     rgba(186,117,23,0.25);
+    --col-grid:     rgba(0,0,0,0.07);
+    --col-canvas-bg:#ffffff;
+
+    --step-active-bg:   #EEEDFE;
+    --step-active-text: #534AB7;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #1e1e1d;
+      --bg2:       #2a2a28;
+      --border:    rgba(255,255,255,0.12);
+      --text:      #c2c0b6;
+      --muted:     #88877f;
+
+      --col-train:    #5DCAA5;
+      --col-neighbor: #EF9F27;
+      --col-query:    #7F77DD;
+      --col-pred:     #F09595;
+      --col-dist:     rgba(239,159,39,0.35);
+      --col-grid:     rgba(255,255,255,0.08);
+      --col-canvas-bg:#1e1e1d;
+
+      --step-active-bg:   #3C3489;
+      --step-active-text: #AFA9EC;
+    }
+  }
+
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem;
+  }
+
+  .card {
+    background: var(--bg);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem;
+    width: 100%;
+    max-width: 760px;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+  }
+
+  h1 {
+    font-size: 17px;
+    font-weight: 500;
+    margin-bottom: 4px;
+    color: var(--text);
+  }
+
+  .subtitle {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 1.25rem;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0,1fr) 210px;
+    gap: 20px;
+  }
+
+  @media (max-width: 580px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+
+  canvas {
+    width: 100%;
+    border-radius: var(--radius-lg);
+    border: 0.5px solid var(--border);
+    cursor: crosshair;
+    display: block;
+    background: var(--col-canvas-bg);
+  }
+
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .section-label {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .ctrl {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  input[type=range] {
+    flex: 1;
+    accent-color: var(--col-query);
+    height: 4px;
+  }
+
+  .k-val {
+    font-weight: 500;
+    min-width: 16px;
+    color: var(--text);
+  }
+
+  .divider {
+    border: none;
+    border-top: 0.5px solid var(--border);
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    font-weight: 500;
+    background: var(--bg2);
+    color: var(--muted);
+    transition: background 0.3s, color 0.3s;
+    width: 100%;
+  }
+
+  .badge.active {
+    background: var(--step-active-bg);
+    color: var(--step-active-text);
+  }
+
+  .steps {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .pred-value {
+    font-size: 26px;
+    font-weight: 500;
+    color: var(--text);
+    min-height: 36px;
+  }
+
+  .neigh-list {
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+  }
+
+  .neigh-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+    color: var(--muted);
+  }
+
+  .neigh-row span:last-child {
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .btn-reset {
+    margin-top: auto;
+    padding: 7px 12px;
+    font-size: 12px;
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .btn-reset:hover { background: var(--bg2); }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 12px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+
+  .tri {
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 9px solid var(--col-query);
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>KNN — Régression</h1>
+  <p class="subtitle">Cliquez sur le graphe pour prédire la valeur en un nouveau point x₀</p>
+
+  <div class="layout">
+    <div>
+      <canvas id="cv" width="440" height="340"></canvas>
+    </div>
+
+    <div class="sidebar">
+
+      <div>
+        <p class="section-label">Nombre de voisins k</p>
+        <div class="ctrl">
+          <input type="range" id="kSlider" min="1" max="7" step="2" value="3">
+          <span class="k-val" id="kVal">3</span>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <div>
+        <p class="section-label">Étape active</p>
+        <div class="steps">
+          <span class="badge" id="s1">① Cliquez sur le graphe</span>
+          <span class="badge" id="s2">② Calcul des distances</span>
+          <span class="badge" id="s3">③ Sélection des k voisins</span>
+          <span class="badge" id="s4">④ Moyenne → ŷ</span>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <div>
+        <p class="section-label">Prédiction ŷ</p>
+        <p class="pred-value" id="predDisplay">—</p>
+      </div>
+
+      <div id="neighSection">
+        <hr class="divider" style="margin-bottom:10px;">
+        <p class="section-label">Voisins sélectionnés</p>
+        <div class="neigh-list" id="neighList"></div>
+      </div>
+
+      <button class="btn-reset" onclick="reset()">Réinitialiser</button>
+
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><span class="dot" style="background:var(--col-train)"></span> Données d'entraînement</div>
+    <div class="legend-item"><span class="dot" style="background:var(--col-neighbor)"></span> Voisins sélectionnés</div>
+    <div class="legend-item"><span class="tri"></span> Point de requête x₀</div>
+    <div class="legend-item"><span class="dot" style="background:var(--col-pred)"></span> Prédiction ŷ</div>
+  </div>
+</div>
+
+<script>
+const W = 440, H = 340, PAD = 40;
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+const isDark = matchMedia('(prefers-color-scheme:dark)').matches;
+
+const COL = {
+  text:     getComputedStyle(document.documentElement).getPropertyValue('--text').trim()     || '#3d3d3a',
+  muted:    getComputedStyle(document.documentElement).getPropertyValue('--muted').trim()    || '#888780',
+  grid:     isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)',
+  train:    isDark ? '#5DCAA5' : '#0F6E56',
+  neighbor: isDark ? '#EF9F27' : '#BA7517',
+  query:    isDark ? '#7F77DD' : '#534AB7',
+  pred:     isDark ? '#F09595' : '#A32D2D',
+  dist:     isDark ? 'rgba(239,159,39,0.35)' : 'rgba(186,117,23,0.25)',
+  bg:       isDark ? '#1e1e1d' : '#ffffff',
+};
+
+const pts = [];
+
+function genData() {
+  pts.length = 0;
+  for (let i = 0; i < 22; i++) {
+    const x = 0.05 + Math.random() * 0.9;
+    const y = 0.5 + 0.32 * Math.sin(x * 6) + (Math.random() - 0.5) * 0.18;
+    pts.push({ x, y });
+  }
+}
+genData();
+
+let queryPt = null, kNeighbors = [], predY = null, k = 3;
+
+function toCanvas(nx, ny) {
+  return { cx: PAD + nx * (W - 2*PAD), cy: H - PAD - ny * (H - 2*PAD) };
+}
+function toNorm(cx, cy) {
+  return { nx: (cx - PAD) / (W - 2*PAD), ny: 1 - (cy - PAD) / (H - 2*PAD) };
+}
+
+function drawGrid() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = COL.bg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = COL.grid;
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 5; i++) {
+    const cx = PAD + i * (W - 2*PAD) / 5;
+    const cy = H - PAD - i * (H - 2*PAD) / 5;
+    ctx.beginPath(); ctx.moveTo(cx, PAD); ctx.lineTo(cx, H - PAD); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD, cy); ctx.lineTo(W - PAD, cy); ctx.stroke();
+  }
+  ctx.strokeStyle = COL.muted;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(PAD, PAD); ctx.lineTo(PAD, H - PAD); ctx.lineTo(W - PAD, H - PAD);
+  ctx.stroke();
+  ctx.fillStyle = COL.muted;
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('x₀', W / 2, H - 6);
+  ctx.save();
+  ctx.translate(12, H / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('y', 0, 0);
+  ctx.restore();
+}
+
+function drawDistLines() {
+  if (!queryPt || !kNeighbors.length) return;
+  const q = toCanvas(queryPt.x, queryPt.y);
+  kNeighbors.forEach(p => {
+    const c = toCanvas(p.x, p.y);
+    ctx.save();
+    ctx.strokeStyle = COL.dist;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(q.cx, q.cy); ctx.lineTo(c.cx, c.cy); ctx.stroke();
+    ctx.restore();
+  });
+}
+
+function drawMeanLine() {
+  if (!queryPt || predY === null) return;
+  const q = toCanvas(queryPt.x, queryPt.y);
+  const p = toCanvas(queryPt.x, predY);
+  ctx.save();
+  ctx.strokeStyle = COL.pred;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 3]);
+  ctx.beginPath(); ctx.moveTo(q.cx, q.cy); ctx.lineTo(p.cx, p.cy); ctx.stroke();
+  ctx.restore();
+}
+
+function drawPredPoint() {
+  if (!queryPt || predY === null) return;
+  const p = toCanvas(queryPt.x, predY);
+  ctx.beginPath(); ctx.arc(p.cx, p.cy, 7, 0, 2 * Math.PI);
+  ctx.fillStyle = COL.pred; ctx.fill();
+  ctx.strokeStyle = COL.bg; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = COL.text;
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('ŷ=' + predY.toFixed(2), p.cx + 10, p.cy + 4);
+}
+
+function drawTrainPts() {
+  pts.forEach(p => {
+    const isN = kNeighbors.includes(p);
+    const { cx, cy } = toCanvas(p.x, p.y);
+    ctx.beginPath(); ctx.arc(cx, cy, isN ? 7 : 5, 0, 2 * Math.PI);
+    ctx.fillStyle = isN ? COL.neighbor : COL.train;
+    ctx.fill();
+    if (isN) { ctx.strokeStyle = COL.bg; ctx.lineWidth = 2; ctx.stroke(); }
+  });
+}
+
+function drawQuery() {
+  if (!queryPt) return;
+  const { cx, cy } = toCanvas(queryPt.x, queryPt.y);
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 9); ctx.lineTo(cx + 8, cy + 6); ctx.lineTo(cx - 8, cy + 6);
+  ctx.closePath();
+  ctx.fillStyle = COL.query; ctx.fill();
+  ctx.strokeStyle = COL.bg; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = COL.text;
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('x₀', cx + 10, cy + 4);
+}
+
+function draw() {
+  drawGrid();
+  drawDistLines();
+  drawMeanLine();
+  drawTrainPts();
+  drawQuery();
+  drawPredPoint();
+}
+
+function setStep(n) {
+  [1, 2, 3, 4].forEach(i => {
+    const el = document.getElementById('s' + i);
+    el.classList.toggle('active', i === n);
+  });
+}
+
+function updateNeighList() {
+  const list = document.getElementById('neighList');
+  if (!kNeighbors.length) { list.style.display = 'none'; return; }
+  list.style.display = 'flex';
+  list.innerHTML = kNeighbors.map((p, i) => `
+    <div class="neigh-row">
+      <span>Voisin ${i + 1}</span>
+      <span>y = ${p.y.toFixed(2)}</span>
+    </div>`).join('');
+}
+
+function runKNN(qx) {
+  const dists = pts.map(p => ({ p, d: Math.abs(p.x - qx) }));
+  dists.sort((a, b) => a.d - b.d);
+  kNeighbors = dists.slice(0, k).map(d => d.p);
+  predY = kNeighbors.reduce((s, p) => s + p.y, 0) / kNeighbors.length;
+}
+
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+function reset() {
+  queryPt = null; kNeighbors = []; predY = null;
+  document.getElementById('predDisplay').textContent = '—';
+  document.getElementById('neighList').style.display = 'none';
+  setStep(0);
+  draw();
+}
+
+canvas.addEventListener('click', e => {
+  const r = canvas.getBoundingClientRect();
+  const sx = canvas.width / r.width, sy = canvas.height / r.height;
+  const cx = (e.clientX - r.left) * sx, cy = (e.clientY - r.top) * sy;
+  const { nx, ny } = toNorm(cx, cy);
+  if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
+  queryPt = { x: clamp01(nx), y: clamp01(ny) };
+  kNeighbors = []; predY = null;
+  setStep(1); draw();
+  setTimeout(() => { setStep(2); draw(); }, 300);
+  setTimeout(() => {
+    runKNN(queryPt.x);
+    setStep(3); draw();
+    updateNeighList();
+  }, 700);
+  setTimeout(() => {
+    setStep(4); draw();
+    document.getElementById('predDisplay').textContent = predY.toFixed(3);
+  }, 1200);
+});
+
+document.getElementById('kSlider').addEventListener('input', function () {
+  k = +this.value;
+  document.getElementById('kVal').textContent = k;
+  if (queryPt) {
+    runKNN(queryPt.x);
+    draw();
+    updateNeighList();
+    document.getElementById('predDisplay').textContent = predY.toFixed(3);
+  }
+});
+
+draw();
+setStep(0);
+</script>
+</body>
+</html>
