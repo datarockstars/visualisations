@@ -1,0 +1,137 @@
+
+<style>
+.tab-bar{display:flex;gap:0;border-bottom:0.5px solid var(--color-border-tertiary);margin-bottom:1.5rem}
+.tab{padding:8px 18px;font-size:13px;cursor:pointer;border:none;background:none;color:var(--color-text-secondary);border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
+.tab.active{color:var(--color-text-primary);border-bottom-color:var(--color-text-primary);font-weight:500}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;margin-left:6px}
+.badge-ok{background:var(--color-background-success);color:var(--color-text-success)}
+.badge-warn{background:var(--color-background-warning);color:var(--color-text-warning)}
+.badge-err{background:var(--color-background-danger);color:var(--color-text-danger)}
+.explain{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:.75rem 1rem;font-size:13px;color:var(--color-text-secondary);margin-top:1rem;line-height:1.6}
+.explain strong{color:var(--color-text-primary);font-weight:500}
+canvas{display:block;width:100%;border-radius:var(--border-radius-md)}
+</style>
+
+<h2 class="sr-only">Graphique de diagnostic résidus vs valeurs prédites — trois cas : bonne distribution, hétéroscédasticité, non-linéarité</h2>
+
+<div class="tab-bar">
+  <button class="tab active" onclick="show(0)">Bonne distribution <span class="badge badge-ok">✓ H1 H3</span></button>
+  <button class="tab" onclick="show(1)">Entonnoir <span class="badge badge-warn">⚠ Hétéro.</span></button>
+  <button class="tab" onclick="show(2)">Courbe <span class="badge badge-err">✗ Non-linéaire</span></button>
+</div>
+
+<div style="position:relative;width:100%;height:360px">
+  <canvas id="chart" role="img" aria-label="Graphique résidus vs valeurs prédites"></canvas>
+</div>
+
+<div class="explain" id="explain"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const N = 220;
+const rng = (()=>{let s=42;return()=>{s=(s*1664525+1013904223)>>>0;return(s/4294967296)-.5};})();
+const randn=()=>{let u=0,v=0;while(!u)u=rng()+.5;while(!v)v=rng()+.5;return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};
+
+function makeData(type){
+  const pts=[];
+  for(let i=0;i<N;i++){
+    const y_hat=rng()*8+1;
+    let eps;
+    if(type===0) eps=randn()*1.2;
+    else if(type===1) eps=randn()*y_hat*.55;
+    else eps=randn()*1+(y_hat-4.5)*.55*(y_hat-4.5)/8-1.2;
+    pts.push({x:+y_hat.toFixed(2),y:+eps.toFixed(2)});
+  }
+  return pts;
+}
+
+const configs=[
+  {
+    data:makeData(0),
+    label:'Résidus',
+    color:'rgba(25,125,195,0.45)',
+    title:'Résidus vs valeurs prédites — bonne distribution',
+    explain:'<strong>Ce qu\'on cherche :</strong> le nuage est aléatoire, centré sur 0, avec une dispersion constante quelle que soit la valeur prédite. Aucun pattern visible → les hypothèses H1 (linéarité) et H3 (homoscédasticité) sont respectées.'
+  },
+  {
+    data:makeData(1),
+    color:'rgba(190,120,10,0.45)',
+    label:'Résidus',
+    title:'Pattern en entonnoir — hétéroscédasticité',
+    explain:'<strong>Pattern entonnoir :</strong> la variance des résidus <em>augmente</em> avec ŷ. Les points s\'évasent comme un entonnoir vers la droite. → <strong>Violation de H3</strong> (homoscédasticité). Remèdes possibles : transformation log(y), régression WLS, ou erreurs-types robustes.'
+  },
+  {
+    data:makeData(2),
+    color:'rgba(190,50,50,0.45)',
+    label:'Résidus',
+    title:'Pattern en courbe — non-linéarité résiduelle',
+    explain:'<strong>Pattern en courbe :</strong> les résidus suivent une tendance systématique (parabole). Cela révèle qu\'une relation non linéaire n\'a pas été capturée par le modèle. → <strong>Violation de H1</strong> (linéarité). Remèdes : ajouter une variable quadratique ŷ², transformer les prédicteurs, ou utiliser un modèle non paramétrique.'
+  }
+];
+
+let chart=null;
+const tabs=document.querySelectorAll('.tab');
+
+function show(i){
+  tabs.forEach((t,j)=>t.classList.toggle('active',i===j));
+  const c=configs[i];
+  document.getElementById('explain').innerHTML=c.explain;
+  const isDark=matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridColor=isDark?'rgba(255,255,255,.08)':'rgba(0,0,0,.07)';
+  const textColor=isDark?'#a8a69e':'#73726c';
+  const zeroColor=isDark?'rgba(220,80,80,.8)':'rgba(200,50,50,.8)';
+
+  if(chart){chart.destroy();}
+  chart=new Chart(document.getElementById('chart'),{
+    type:'scatter',
+    data:{datasets:[{
+      label:c.label,
+      data:c.data,
+      pointRadius:3.5,
+      pointHoverRadius:5,
+      backgroundColor:c.color,
+      borderWidth:0
+    }]},
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      animation:{duration:350},
+      plugins:{
+        legend:{display:false},
+        title:{display:true,text:c.title,font:{size:13,weight:'500'},color:textColor,padding:{bottom:8}},
+        annotation:{},
+        tooltip:{callbacks:{label:p=>`ŷ=${p.raw.x.toFixed(2)}, ε=${p.raw.y.toFixed(2)}`}}
+      },
+      scales:{
+        x:{
+          title:{display:true,text:'Valeurs prédites  ŷ',color:textColor,font:{size:12}},
+          grid:{color:gridColor},
+          ticks:{color:textColor,font:{size:11}}
+        },
+        y:{
+          title:{display:true,text:'Résidus  ε = y − ŷ',color:textColor,font:{size:12}},
+          grid:{color:gridColor},
+          ticks:{color:textColor,font:{size:11}}
+        }
+      }
+    },
+    plugins:[{
+      id:'zeroline',
+      afterDatasetsDraw(chart){
+        const {ctx,chartArea:{left,right},scales:{y}}=chart;
+        const z=y.getPixelForValue(0);
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash([6,4]);
+        ctx.strokeStyle=zeroColor;
+        ctx.lineWidth=1.5;
+        ctx.moveTo(left,z);ctx.lineTo(right,z);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }]
+  });
+}
+
+show(0);
+</script>
