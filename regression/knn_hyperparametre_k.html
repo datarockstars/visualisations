@@ -1,0 +1,254 @@
+
+<style>
+#knn-k-wrap { padding: 0.5rem 0 1rem; }
+.kk-controls { display:flex; align-items:center; gap:16px; margin-bottom:1.25rem; flex-wrap:wrap; }
+.kk-slider-group { display:flex; align-items:center; gap:10px; flex:1; min-width:200px; }
+.kk-slider-group label { font-size:13px; color:var(--color-text-secondary); white-space:nowrap; }
+.kk-slider-group input { flex:1; }
+.kk-kdisp { font-size:22px; font-weight:500; color:var(--color-text-primary); min-width:32px; }
+.kk-pills { display:flex; gap:8px; flex-wrap:wrap; }
+.kk-pill { font-size:12px; padding:4px 12px; border-radius:20px; border:0.5px solid var(--color-border-secondary); background:transparent; color:var(--color-text-secondary); cursor:pointer; transition:background .15s, color .15s; }
+.kk-pill:hover { background:var(--color-background-secondary); }
+.kk-pill.kk-on { background:var(--color-background-secondary); color:var(--color-text-primary); border-color:var(--color-border-primary); }
+.kk-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-bottom:1rem; }
+.kk-metric { background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:10px 14px; }
+.kk-metric-label { font-size:11px; color:var(--color-text-secondary); margin:0 0 2px; }
+.kk-metric-val { font-size:18px; font-weight:500; color:var(--color-text-primary); margin:0; }
+.kk-regime { font-size:12px; padding:3px 10px; border-radius:20px; display:inline-block; margin-top:4px; }
+.kk-chart { position:relative; width:100%; height:260px; }
+.kk-legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--color-text-secondary); margin-top:10px; }
+.kk-leg-item { display:flex; align-items:center; gap:5px; }
+.kk-leg-sq { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
+.kk-leg-dash { width:18px; height:2px; border-top:2px dashed; flex-shrink:0; }
+</style>
+
+<div id="knn-k-wrap">
+  <h2 class="sr-only">Visualisation interactive du compromis biais-variance selon k dans KNN</h2>
+
+  <div class="kk-controls">
+    <div class="kk-slider-group">
+      <label>k =</label>
+      <input type="range" id="kk-slider" min="1" max="25" step="1" value="3">
+      <span class="kk-kdisp" id="kk-kdisp">3</span>
+    </div>
+    <div class="kk-pills">
+      <button class="kk-pill" data-k="1">k=1</button>
+      <button class="kk-pill" data-k="3">k=3</button>
+      <button class="kk-pill kk-on" data-k="5">k=5</button>
+      <button class="kk-pill" data-k="10">k=10</button>
+      <button class="kk-pill" data-k="25">k=25</button>
+    </div>
+  </div>
+
+  <div class="kk-metrics">
+    <div class="kk-metric">
+      <p class="kk-metric-label">Variance</p>
+      <p class="kk-metric-val" id="kk-var">—</p>
+    </div>
+    <div class="kk-metric">
+      <p class="kk-metric-label">Biais²</p>
+      <p class="kk-metric-val" id="kk-bias">—</p>
+    </div>
+    <div class="kk-metric">
+      <p class="kk-metric-label">Régime</p>
+      <p class="kk-metric-val" id="kk-regime-val" style="font-size:14px">—</p>
+    </div>
+  </div>
+
+  <div class="kk-chart">
+    <canvas id="kk-canvas" role="img" aria-label="Courbes KNN pour différentes valeurs de k">Courbes de prédiction KNN.</canvas>
+  </div>
+
+  <div class="kk-legend">
+    <div class="kk-leg-item"><span class="kk-leg-sq" style="background:#888780"></span> Données d'entraînement</div>
+    <div class="kk-leg-item"><span class="kk-leg-dash" style="border-color:#5DCAA5"></span> Vraie fonction</div>
+    <div class="kk-leg-item"><span class="kk-leg-sq" style="background:#7F77DD"></span> Prédiction KNN (k actuel)</div>
+    <div class="kk-leg-item"><span class="kk-leg-sq" style="background:#F09595; opacity:.45"></span> Zone d'incertitude</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+(function(){
+  const N = 40;
+  const trueF = x => 0.5 + 0.35*Math.sin(x*5.5);
+  const noise = 0.12;
+
+  const rng = (function(){let s=42; return function(){s=(s*1664525+1013904223)&0xffffffff; return (s>>>0)/0xffffffff;};})();
+  function nrand(){let u=rng(),v=rng();return Math.sqrt(-2*Math.log(u+1e-10))*Math.cos(2*Math.PI*v);}
+
+  const trainX=[],trainY=[];
+  for(let i=0;i<N;i++){
+    const x=rng();
+    trainX.push(x);
+    trainY.push(trueF(x)+nrand()*noise);
+  }
+
+  const evalX=[];
+  for(let i=0;i<=80;i++) evalX.push(i/80);
+
+  function knnPredict(qx, k){
+    const dists=trainX.map((x,i)=>({d:Math.abs(x-qx),y:trainY[i]}));
+    dists.sort((a,b)=>a.d-b.d);
+    const neighbors=dists.slice(0,k);
+    return neighbors.reduce((s,p)=>s+p.y,0)/k;
+  }
+
+  function computeCurve(k){
+    return evalX.map(x=>knnPredict(x,k));
+  }
+
+  function computeMetrics(k){
+    const sqrtN = Math.sqrt(N);
+    const varScore = Math.round(100 * Math.max(0, 1 - (k-1)/(N-1)));
+    const biasScore = Math.round(100 * Math.pow((k-1)/(N-1), 0.55));
+    return {variance: varScore, bias: biasScore};
+  }
+
+  const isDark = matchMedia('(prefers-color-scheme:dark)').matches;
+  const C = {
+    train:   isDark ? '#888780' : '#73726c',
+    truth:   isDark ? '#5DCAA5' : '#1D9E75',
+    pred:    isDark ? '#7F77DD' : '#534AB7',
+    bandF:   isDark ? 'rgba(127,119,221,0.18)' : 'rgba(83,74,183,0.12)',
+    bandE:   isDark ? 'rgba(127,119,221,0)' : 'rgba(83,74,183,0)',
+    gridC:   isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+    tickC:   isDark ? '#888780' : '#888780',
+    text:    isDark ? '#c2c0b6' : '#3d3d3a',
+  };
+
+  const trueData = evalX.map(x=>trueF(x));
+
+  let currentK = 3;
+  let chart;
+
+  function buildChart(k){
+    const pred = computeCurve(k);
+    const bandUp = pred.map((y,i)=>y+0.08*(1/(k**0.5)));
+    const bandDn = pred.map((y,i)=>y-0.08*(1/(k**0.5)));
+
+    const labels = evalX.map(x=>x.toFixed(2));
+
+    if(chart) chart.destroy();
+    chart = new Chart(document.getElementById('kk-canvas'),{
+      type:'line',
+      data:{
+        labels,
+        datasets:[
+          {
+            label:'Bande',
+            data: bandUp,
+            borderWidth:0,
+            pointRadius:0,
+            fill:'+1',
+            backgroundColor: C.bandF,
+            tension:0.4,
+            order:4,
+          },
+          {
+            label:'Bande bas',
+            data: bandDn,
+            borderWidth:0,
+            pointRadius:0,
+            fill:false,
+            backgroundColor: C.bandE,
+            tension:0.4,
+            order:5,
+          },
+          {
+            label:'Vraie fonction',
+            data: trueData,
+            borderColor: C.truth,
+            borderWidth:2,
+            borderDash:[6,3],
+            pointRadius:0,
+            fill:false,
+            tension:0.4,
+            order:2,
+          },
+          {
+            label:'KNN k='+k,
+            data: pred,
+            borderColor: C.pred,
+            borderWidth:2.5,
+            pointRadius:0,
+            fill:false,
+            tension:0.3,
+            order:1,
+          },
+          {
+            label:'Train',
+            data: trainX.map((x,i)=>({x,y:trainY[i]})),
+            type:'scatter',
+            borderColor: C.train,
+            backgroundColor: C.train,
+            pointRadius:3.5,
+            pointStyle:'circle',
+            showLine:false,
+            order:3,
+          }
+        ]
+      },
+      options:{
+        responsive:true,
+        maintainAspectRatio:false,
+        animation:{duration:200},
+        plugins:{legend:{display:false},tooltip:{enabled:false}},
+        scales:{
+          x:{
+            type:'linear',min:0,max:1,
+            grid:{color:C.gridC},
+            ticks:{color:C.tickC,maxTicksLimit:6,callback:v=>v.toFixed(1)},
+            title:{display:true,text:'x',color:C.tickC,font:{size:12}},
+          },
+          y:{
+            min:0.05,max:0.95,
+            grid:{color:C.gridC},
+            ticks:{color:C.tickC,maxTicksLimit:5,callback:v=>v.toFixed(1)},
+            title:{display:true,text:'y',color:C.tickC,font:{size:12}},
+          }
+        }
+      }
+    });
+  }
+
+  function updateMetrics(k){
+    const sqrtK = Math.round(Math.sqrt(N));
+    const m = computeMetrics(k);
+    document.getElementById('kk-var').textContent = m.variance + ' / 100';
+    document.getElementById('kk-bias').textContent = m.bias + ' / 100';
+
+    let regime, color;
+    if(k <= 2){ regime='Overfitting'; color='#A32D2D'; }
+    else if(k >= 18){ regime='Underfitting'; color='#BA7517'; }
+    else if(Math.abs(k - sqrtK) <= 2){ regime='Optimal ≈ √n'; color='#0F6E56'; }
+    else { regime='Équilibré'; color=isDark?'#7F77DD':'#534AB7'; }
+    const el = document.getElementById('kk-regime-val');
+    el.textContent = regime;
+    el.style.color = color;
+
+    document.getElementById('kk-kdisp').textContent = k;
+    document.getElementById('kk-kdisp').style.color =
+      k<=2 ? '#A32D2D' : k>=18 ? '#BA7517' : isDark?'#7F77DD':'#534AB7';
+  }
+
+  function update(k){
+    currentK = k;
+    buildChart(k);
+    updateMetrics(k);
+    document.getElementById('kk-slider').value = k;
+    document.querySelectorAll('.kk-pill').forEach(p=>{
+      p.classList.toggle('kk-on', +p.dataset.k === k);
+    });
+  }
+
+  document.getElementById('kk-slider').addEventListener('input', function(){
+    update(+this.value);
+  });
+  document.querySelectorAll('.kk-pill').forEach(p=>{
+    p.addEventListener('click',()=>update(+p.dataset.k));
+  });
+
+  update(3);
+})();
+</script>
