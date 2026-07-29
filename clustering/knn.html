@@ -1,0 +1,238 @@
+
+<style>
+h2.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.ctrl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;font-size:13px;color:var(--text-secondary)}
+.ctrl label{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.metric{background:var(--surface-1);border-radius:var(--radius);padding:8px 12px}
+.metric .val{font-size:20px;font-weight:500;color:var(--text-primary)}
+.metric .lbl{font-size:11px;color:var(--text-muted);margin-top:2px}
+#status{font-size:12px;color:var(--text-secondary);margin-bottom:8px;min-height:18px;line-height:1.5}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary);margin-bottom:8px}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+</style>
+
+<h2 class="sr-only">Visualisation interactive du classifieur k-NN — cliquez sur le canvas pour classer un nouveau point</h2>
+
+<div class="ctrl">
+  <label>k = <input type="range" id="kSlider" min="1" max="15" value="5" step="2" style="width:80px">
+    <strong id="kVal">5</strong></label>
+  <label>Classes :
+    <select id="classSelect" style="font-size:13px">
+      <option value="2">2</option>
+      <option value="3" selected>3</option>
+      <option value="4">4</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="bgCheck" checked> Frontières</label>
+  <button onclick="resetAll()" style="margin-left:auto"><i class="ti ti-refresh" aria-hidden="true"></i> Réinitialiser</button>
+</div>
+
+<div class="metrics">
+  <div class="metric"><div class="val" id="mK">5</div><div class="lbl">Voisins k</div></div>
+  <div class="metric"><div class="val" id="mClass">—</div><div class="lbl">Classe prédite</div></div>
+  <div class="metric"><div class="val" id="mVote">—</div><div class="lbl">Vote majoritaire</div></div>
+</div>
+
+<div class="legend" id="legend"></div>
+<div id="status">Cliquez n'importe où sur le graphique pour classer un nouveau point.</div>
+
+<div style="position:relative;width:100%;height:400px">
+  <canvas id="cv" role="img" aria-label="Graphique k-NN interactif — cliquez pour classer un point"></canvas>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+const PAL_L = ['#2a78d6','#eb6834','#1baf7a','#eda100'];
+const PAL_D = ['#3987e5','#d95926','#199e70','#c98500'];
+const PAL = isDark ? PAL_D : PAL_L;
+const PAL_BG_L = ['rgba(42,120,214,0.10)','rgba(235,104,52,0.10)','rgba(27,175,122,0.10)','rgba(237,161,0,0.10)'];
+const PAL_BG_D = ['rgba(57,135,229,0.12)','rgba(217,89,38,0.12)','rgba(25,158,112,0.12)','rgba(201,133,0,0.12)'];
+const PAL_BG = isDark ? PAL_BG_D : PAL_BG_L;
+const NAMES = ['A','B','C','D'];
+
+const W=640, H=380, PAD=24;
+let K=5, nClasses=3, trainPts=[], chart=null, queryPt=null, neighbors=[];
+
+function rng(a,b){return Math.random()*(b-a)+a;}
+function randn(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+
+function genTrain(n,nc){
+  const cx=[], cy=[];
+  for(let j=0;j<nc;j++){cx.push(rng(PAD+60,W-PAD-60));cy.push(rng(PAD+60,H-PAD-60));}
+  const pts=[];
+  for(let i=0;i<n;i++){
+    const c=Math.floor(Math.random()*nc);
+    pts.push({x:cx[c]+randn()*70, y:cy[c]+randn()*70, cls:c});
+  }
+  return pts;
+}
+
+function dist(a,b){return Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2);}
+
+function knn(query,k){
+  const sorted=[...trainPts].map(p=>({...p,d:dist(p,query)})).sort((a,b)=>a.d-b.d);
+  return sorted.slice(0,k);
+}
+
+function majority(nbrs){
+  const votes=new Array(nClasses).fill(0);
+  nbrs.forEach(n=>votes[n.cls]++);
+  return votes.indexOf(Math.max(...votes));
+}
+
+function buildBgDatasets(){
+  if(!document.getElementById('bgCheck').checked) return [];
+  const step=12;
+  const byClass=Array.from({length:nClasses},()=>[]);
+  for(let px=0;px<W;px+=step){
+    for(let py=0;py<H;py+=step){
+      const nbrs=knn({x:px,y:py},K);
+      const c=majority(nbrs);
+      byClass[c].push({x:px,y:py});
+    }
+  }
+  return byClass.map((pts,j)=>({
+    label:`bg${j}`,data:pts,type:'scatter',
+    pointRadius:step*0.52,pointHoverRadius:0,
+    backgroundColor:PAL_BG[j],borderWidth:0,order:10
+  }));
+}
+
+function buildTrainDatasets(){
+  return Array.from({length:nClasses},(_,j)=>({
+    label:`Classe ${NAMES[j]}`,
+    data:trainPts.filter(p=>p.cls===j).map(p=>({x:p.x,y:p.y})),
+    type:'scatter',pointRadius:5,pointHoverRadius:7,
+    backgroundColor:PAL[j],borderWidth:1.5,borderColor:isDark?'rgba(0,0,0,0.3)':'rgba(255,255,255,0.5)',
+    order:2
+  }));
+}
+
+function buildQueryDatasets(){
+  if(!queryPt) return [];
+  const ds=[];
+  if(neighbors.length){
+    ds.push({
+      label:'Voisins',
+      data:neighbors.map(n=>({x:n.x,y:n.y})),
+      type:'scatter',pointRadius:9,pointHoverRadius:9,
+      backgroundColor:'transparent',
+      borderColor:neighbors.map(n=>PAL[n.cls]),
+      borderWidth:2.5,order:1,
+      pointStyle:'circle'
+    });
+    const predCls=majority(neighbors);
+    ds.push({
+      label:'Liens',
+      data:neighbors.flatMap(n=>[{x:queryPt.x,y:queryPt.y},{x:n.x,y:n.y},{x:NaN,y:NaN}]),
+      type:'scatter',showLine:true,
+      borderColor:isDark?'rgba(255,255,255,0.2)':'rgba(0,0,0,0.15)',
+      borderWidth:1,borderDash:[4,3],
+      pointRadius:0,fill:false,order:3
+    });
+    ds.push({
+      label:'Requête',
+      data:[{x:queryPt.x,y:queryPt.y}],
+      type:'scatter',pointRadius:9,pointHoverRadius:10,
+      backgroundColor:PAL[predCls],
+      borderColor:isDark?'#fff':'#000',borderWidth:2.5,
+      pointStyle:'star',order:0
+    });
+  }
+  return ds;
+}
+
+function renderChart(){
+  if(chart)chart.destroy();
+  const grid=isDark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.05)';
+  const tick=isDark?'#898781':'#898781';
+  const datasets=[...buildBgDatasets(),...buildTrainDatasets(),...buildQueryDatasets()];
+  chart=new Chart(document.getElementById('cv'),{
+    type:'scatter',
+    data:{datasets},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      animation:{duration:200},
+      plugins:{legend:{display:false},
+        tooltip:{filter:item=>!item.dataset.label.startsWith('bg')&&item.dataset.label!=='Liens',
+          callbacks:{label:ctx=>{
+            if(ctx.dataset.label==='Requête')return `Point requête → classe ${NAMES[majority(neighbors)]}`;
+            if(ctx.dataset.label==='Voisins')return `Voisin classe ${NAMES[ctx.dataset.data[ctx.dataIndex]?.cls??0]}`;
+            return `${ctx.dataset.label}`;
+          }}
+        }
+      },
+      scales:{
+        x:{min:0,max:W,grid:{color:grid},ticks:{color:tick,font:{size:10},maxTicksLimit:6},border:{display:false}},
+        y:{min:0,max:H,grid:{color:grid},ticks:{color:tick,font:{size:10},maxTicksLimit:6},border:{display:false}}
+      },
+      onClick(evt){
+        const {left,top,width,height}=evt.chart.chartArea;
+        const rect=evt.chart.canvas.getBoundingClientRect();
+        const mx=evt.native.clientX-rect.left;
+        const my=evt.native.clientY-rect.top;
+        if(mx<left||mx>left+width||my<top||my>top+height)return;
+        const px=(mx-left)/width*W;
+        const py=(1-(my-top)/height)*H;
+        queryPt={x:px,y:py};
+        neighbors=knn(queryPt,K);
+        const predCls=majority(neighbors);
+        const votes=new Array(nClasses).fill(0);
+        neighbors.forEach(n=>votes[n.cls]++);
+        const voteStr=votes.map((v,j)=>`${NAMES[j]}:${v}`).join(' ');
+        document.getElementById('mClass').textContent=NAMES[predCls];
+        document.getElementById('mClass').style.color=PAL[predCls];
+        document.getElementById('mVote').textContent=voteStr;
+        const maxD=Math.max(...neighbors.map(n=>n.d));
+        document.getElementById('status').innerHTML=
+          `Point classé <strong style="color:${PAL[predCls]}">Classe ${NAMES[predCls]}</strong> — ${K} voisins trouvés, distance max ${Math.round(maxD)}px. Vote : ${votes.map((v,j)=>`<span style="color:${PAL[j]}">${NAMES[j]}: ${v}</span>`).join(' · ')}.`;
+        renderChart();
+      }
+    }
+  });
+}
+
+function updateLegend(){
+  document.getElementById('legend').innerHTML=Array.from({length:nClasses},(_,j)=>
+    `<span><span class="dot" style="background:${PAL[j]}"></span>Classe ${NAMES[j]}</span>`).join('');
+}
+
+function resetAll(){
+  K=+document.getElementById('kSlider').value;
+  nClasses=+document.getElementById('classSelect').value;
+  document.getElementById('mK').textContent=K;
+  document.getElementById('mClass').textContent='—';
+  document.getElementById('mClass').style.color='';
+  document.getElementById('mVote').textContent='—';
+  document.getElementById('status').textContent='Cliquez n\'importe où sur le graphique pour classer un nouveau point.';
+  queryPt=null;neighbors=[];
+  trainPts=genTrain(120,nClasses);
+  updateLegend();
+  renderChart();
+}
+
+document.getElementById('kSlider').oninput=e=>{
+  K=+e.target.value;
+  document.getElementById('kVal').textContent=K;
+  document.getElementById('mK').textContent=K;
+  if(queryPt){
+    neighbors=knn(queryPt,K);
+    const predCls=majority(neighbors);
+    const votes=new Array(nClasses).fill(0);
+    neighbors.forEach(n=>votes[n.cls]++);
+    document.getElementById('mClass').textContent=NAMES[predCls];
+    document.getElementById('mClass').style.color=PAL[predCls];
+    document.getElementById('mVote').textContent=votes.map((v,j)=>`${NAMES[j]}:${v}`).join(' ');
+    document.getElementById('status').innerHTML=
+      `Point classé <strong style="color:${PAL[predCls]}">Classe ${NAMES[predCls]}</strong> avec k=${K}. Vote : ${votes.map((v,j)=>`<span style="color:${PAL[j]}">${NAMES[j]}: ${v}</span>`).join(' · ')}.`;
+  }
+  renderChart();
+};
+document.getElementById('classSelect').onchange=resetAll;
+document.getElementById('bgCheck').onchange=()=>renderChart();
+
+resetAll();
+</script>
