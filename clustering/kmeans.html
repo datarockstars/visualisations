@@ -1,0 +1,210 @@
+
+<style>
+h2.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.ctrl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;font-size:13px;color:var(--text-secondary)}
+.ctrl label{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.metric{background:var(--surface-1);border-radius:var(--radius);padding:8px 12px}
+.metric .val{font-size:20px;font-weight:500;color:var(--text-primary)}
+.metric .lbl{font-size:11px;color:var(--text-muted);margin-top:2px}
+.step-bar{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.step-pill{font-size:11px;padding:3px 10px;border-radius:20px;border:0.5px solid var(--border);color:var(--text-muted);background:var(--surface-1);cursor:default}
+.step-pill.done{background:var(--bg-accent);color:var(--text-accent);border-color:var(--border-accent)}
+.step-pill.current{background:var(--surface-2);color:var(--text-primary);border-color:var(--border-strong);font-weight:500}
+#status{font-size:12px;color:var(--text-secondary);margin-bottom:8px;min-height:18px}
+button{cursor:pointer}
+</style>
+
+<h2 class="sr-only">Visualisation interactive de l'algorithme K-Means — cliquez sur Étape suivante pour animer chaque itération</h2>
+
+<div class="ctrl">
+  <label>K = <input type="range" id="kSlider" min="2" max="5" value="3" step="1" style="width:80px">
+    <strong id="kVal">3</strong></label>
+  <label>Points : <input type="range" id="nSlider" min="60" max="200" value="120" step="10" style="width:80px">
+    <strong id="nVal">120</strong></label>
+  <button onclick="reset()" style="margin-left:auto"><i class="ti ti-refresh" aria-hidden="true"></i> Réinitialiser</button>
+  <button id="stepBtn" onclick="step()"><i class="ti ti-arrow-right" aria-hidden="true"></i> Étape suivante</button>
+  <button id="autoBtn" onclick="toggleAuto()"><i class="ti ti-player-play" id="autoIcon" aria-hidden="true"></i> Auto</button>
+</div>
+
+<div class="step-bar" id="stepBar"></div>
+<div id="status">Centroïdes placés aléatoirement — cliquez sur <strong>Étape suivante</strong> pour assigner les points.</div>
+
+<div class="metrics">
+  <div class="metric"><div class="val" id="mIter">0</div><div class="lbl">Itération</div></div>
+  <div class="metric"><div class="val" id="mInertia">—</div><div class="lbl">Inertie (WCSS)</div></div>
+  <div class="metric"><div class="val" id="mChanged">—</div><div class="lbl">Points réassignés</div></div>
+</div>
+
+<div style="position:relative;width:100%;height:380px">
+  <canvas id="cv" role="img" aria-label="Scatter plot montrant les points et centroïdes K-Means"></canvas>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const PALETTE_L = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4'];
+const PALETTE_D = ['#3987e5','#d95926','#199e70','#c98500','#d55181'];
+const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+const PAL = isDark ? PALETTE_D : PALETTE_L;
+
+const W=640,H=360,PAD=30;
+let K=3,N=120,pts=[],labels=[],centroids=[],phase='assign',iter=0,prevLabels=[],autoTimer=null;
+
+function rng(min,max){return Math.random()*(max-min)+min;}
+
+function genPoints(n,k){
+  const p=[];
+  const cx=Array.from({length:k},()=>rng(PAD,W-PAD));
+  const cy=Array.from({length:k},()=>rng(PAD,H-PAD));
+  for(let i=0;i<n;i++){
+    const c=Math.floor(Math.random()*k);
+    p.push({x:cx[c]+rng(-55,55),y:cy[c]+rng(-55,55)});
+  }
+  return p;
+}
+
+function initCentroids(k){
+  const idx=[];
+  while(idx.length<k){const i=Math.floor(Math.random()*pts.length);if(!idx.includes(i))idx.push(i);}
+  return idx.map(i=>({x:pts[i].x,y:pts[i].y}));
+}
+
+function assign(){
+  const old=[...labels];
+  labels=pts.map(p=>{
+    let best=0,bestD=Infinity;
+    centroids.forEach((c,j)=>{const d=(p.x-c.x)**2+(p.y-c.y)**2;if(d<bestD){bestD=d;best=j;}});
+    return best;
+  });
+  const changed=labels.filter((l,i)=>l!==old[i]).length;
+  return changed;
+}
+
+function updateCentroids(){
+  return centroids.map((_,j)=>{
+    const members=pts.filter((_,i)=>labels[i]===j);
+    if(!members.length)return centroids[j];
+    return{x:members.reduce((s,p)=>s+p.x,0)/members.length,
+           y:members.reduce((s,p)=>s+p.y,0)/members.length};
+  });
+}
+
+function inertia(){
+  return Math.round(pts.reduce((s,p,i)=>{
+    const c=centroids[labels[i]];return s+(p.x-c.x)**2+(p.y-c.y)**2;
+  },0));
+}
+
+function buildDatasets(){
+  const ds=[];
+  if(phase==='init'||phase==='assign'){
+    ds.push({label:'Points',data:pts.map(p=>({x:p.x,y:p.y})),
+      pointRadius:4,pointHoverRadius:5,backgroundColor:isDark?'rgba(200,200,190,0.35)':'rgba(60,60,55,0.25)',borderWidth:0,type:'scatter'});
+  } else {
+    for(let j=0;j<K;j++){
+      const col=PAL[j];
+      ds.push({label:`Cluster ${j+1}`,
+        data:pts.filter((_,i)=>labels[i]===j).map(p=>({x:p.x,y:p.y})),
+        pointRadius:4,pointHoverRadius:5,
+        backgroundColor:col+'88',borderWidth:0,type:'scatter'});
+    }
+  }
+  for(let j=0;j<K;j++){
+    ds.push({label:`Centroïde ${j+1}`,data:[{x:centroids[j].x,y:centroids[j].y}],
+      pointStyle:'crossRot',pointRadius:10,pointBorderWidth:2.5,
+      pointBorderColor:PAL[j],backgroundColor:'transparent',type:'scatter'});
+  }
+  return ds;
+}
+
+function renderChart(){
+  if(chart)chart.destroy();
+  const grid=isDark?'rgba(255,255,255,0.07)':'rgba(0,0,0,0.06)';
+  const tick=isDark?'#898781':'#898781';
+  chart=new Chart(document.getElementById('cv'),{
+    type:'scatter',
+    data:{datasets:buildDatasets()},
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:280},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>{
+        const d=ctx.dataset.label;
+        return `${d}: (${Math.round(ctx.raw.x)}, ${Math.round(ctx.raw.y)})`;
+      }}}},
+      scales:{
+        x:{min:0,max:W,grid:{color:grid},ticks:{color:tick,font:{size:10},maxTicksLimit:6},border:{display:false}},
+        y:{min:0,max:H,grid:{color:grid},ticks:{color:tick,font:{size:10},maxTicksLimit:6},border:{display:false}}
+      }
+    }
+  });
+}
+
+const STEPS=['Init','Assigner','Déplacer','Assigner','Déplacer','Assigner','Déplacer','…'];
+function updateStepBar(current){
+  const bar=document.getElementById('stepBar');
+  bar.innerHTML=STEPS.map((s,i)=>`<span class="step-pill ${i<current?'done':i===current?'current':''}">${s}</span>`).join('');
+}
+
+let chart=null;
+
+function reset(){
+  if(autoTimer){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';document.getElementById('autoBtn').querySelector('i').nextSibling.textContent=' Auto';}
+  K=+document.getElementById('kSlider').value;
+  N=+document.getElementById('nSlider').value;
+  pts=genPoints(N,K);
+  labels=new Array(N).fill(-1);
+  centroids=initCentroids(K);
+  phase='init';iter=0;
+  document.getElementById('mIter').textContent='0';
+  document.getElementById('mInertia').textContent='—';
+  document.getElementById('mChanged').textContent='—';
+  document.getElementById('status').innerHTML='Centroïdes placés aléatoirement — cliquez sur <strong>Étape suivante</strong> pour assigner les points.';
+  document.getElementById('stepBtn').disabled=false;
+  updateStepBar(0);
+  renderChart();
+}
+
+function step(){
+  if(phase==='init'||phase==='assign'){
+    const changed=assign();
+    phase='move';
+    document.getElementById('mChanged').textContent=changed;
+    const converged=changed===0&&iter>0;
+    if(converged){
+      document.getElementById('status').innerHTML=`<strong>Convergé !</strong> Plus aucun point ne change de cluster après ${iter} itération(s). Inertie finale : ${inertia().toLocaleString()}.`;
+      document.getElementById('stepBtn').disabled=true;
+      if(autoTimer){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';}
+    } else {
+      document.getElementById('status').innerHTML=`Étape <strong>Assigner</strong> — chaque point rejoint le centroïde le plus proche. ${changed} points réassignés.`;
+    }
+    document.getElementById('mInertia').textContent=inertia().toLocaleString();
+    updateStepBar(iter*2+1>7?7:iter*2+1);
+  } else {
+    const newC=updateCentroids();
+    centroids=newC;
+    iter++;
+    phase='assign';
+    document.getElementById('mIter').textContent=iter;
+    document.getElementById('status').innerHTML=`Étape <strong>Déplacer</strong> — centroïdes recalculés comme barycentre de leur cluster (itération ${iter}).`;
+    updateStepBar(Math.min(iter*2,7));
+  }
+  renderChart();
+}
+
+function toggleAuto(){
+  if(autoTimer){
+    clearInterval(autoTimer);autoTimer=null;
+    document.getElementById('autoIcon').className='ti ti-player-play';
+  } else {
+    autoTimer=setInterval(()=>{
+      if(document.getElementById('stepBtn').disabled){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';return;}
+      step();
+    },900);
+    document.getElementById('autoIcon').className='ti ti-player-pause';
+  }
+}
+
+document.getElementById('kSlider').oninput=e=>{document.getElementById('kVal').textContent=e.target.value;};
+document.getElementById('nSlider').oninput=e=>{document.getElementById('nVal').textContent=e.target.value;};
+
+reset();
+</script>
