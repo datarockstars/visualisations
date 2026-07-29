@@ -1,0 +1,302 @@
+
+<style>
+h2.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.ctrl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;font-size:13px;color:var(--text-secondary)}
+.ctrl label{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px}
+.panel-label{font-size:12px;font-weight:500;color:var(--text-secondary);margin-bottom:4px}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.metric{background:var(--surface-1);border-radius:var(--radius);padding:8px 12px}
+.metric .val{font-size:20px;font-weight:500;color:var(--text-primary)}
+.metric .lbl{font-size:11px;color:var(--text-muted);margin-top:2px}
+#status{font-size:12px;color:var(--text-secondary);margin-bottom:8px;min-height:18px;line-height:1.5}
+</style>
+
+<h2 class="sr-only">Visualisation interactive du clustering hiérarchique agglomératif — dendrogramme et scatter animés étape par étape</h2>
+
+<div class="ctrl">
+  <label>Points : <input type="range" id="nSlider" min="8" max="20" value="12" step="1" style="width:70px"><strong id="nVal">12</strong></label>
+  <label>Liaison :
+    <select id="linkSelect" style="font-size:13px">
+      <option value="single">Single</option>
+      <option value="complete" selected>Complete</option>
+      <option value="average">Average</option>
+    </select>
+  </label>
+  <button onclick="resetAll()" style="margin-left:auto"><i class="ti ti-refresh" aria-hidden="true"></i> Réinitialiser</button>
+  <button id="stepBtn" onclick="stepFwd()"><i class="ti ti-arrow-right" aria-hidden="true"></i> Étape suivante</button>
+  <button id="autoBtn" onclick="toggleAuto()"><i class="ti ti-player-play" id="autoIcon" aria-hidden="true"></i> Auto</button>
+</div>
+
+<div class="metrics">
+  <div class="metric"><div class="val" id="mStep">0</div><div class="lbl">Fusion</div></div>
+  <div class="metric"><div class="val" id="mClusters">—</div><div class="lbl">Clusters actifs</div></div>
+  <div class="metric"><div class="val" id="mDist">—</div><div class="lbl">Distance fusionnée</div></div>
+</div>
+
+<div id="status">Chaque point est son propre cluster — cliquez sur <strong>Étape suivante</strong> pour fusionner les deux clusters les plus proches.</div>
+
+<div class="panels">
+  <div>
+    <div class="panel-label">Scatter — clusters actuels</div>
+    <div style="position:relative;width:100%;height:300px"><canvas id="scatterCv" role="img" aria-label="Scatter plot du clustering hiérarchique"></canvas></div>
+  </div>
+  <div>
+    <div class="panel-label">Dendrogramme</div>
+    <div style="position:relative;width:100%;height:300px"><canvas id="dendroCv" role="img" aria-label="Dendrogramme du clustering hiérarchique"></canvas></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const isDark=matchMedia('(prefers-color-scheme: dark)').matches;
+const PAL=['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#4a3aa7','#e34948','#008300','#e87ba4','#eb6834','#2a78d6','#1baf7a','#eda100','#4a3aa7','#e34948','#008300','#e34948','#eda100','#2a78d6','#eb6834'];
+const PAL_D=['#3987e5','#d95926','#199e70','#c98500','#d55181','#9085e9','#e66767','#008300','#d55181','#d95926','#3987e5','#199e70','#c98500','#9085e9','#e66767','#008300','#e66767','#c98500','#3987e5','#d95926'];
+const C=isDark?PAL_D:PAL;
+
+let N=12,pts=[],clusters=[],mergeHistory=[],stepIdx=0,scatterChart=null,dendroChart=null,autoTimer=null;
+
+function rng(a,b){return Math.random()*(b-a)+a;}
+function randn(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+
+function genPts(n){
+  const nGroups=Math.round(n/3);
+  const cx=[],cy=[];
+  for(let i=0;i<nGroups;i++){cx.push(rng(60,580));cy.push(rng(40,260));}
+  const ps=[];
+  for(let i=0;i<n;i++){
+    const g=Math.floor(Math.random()*nGroups);
+    ps.push({x:cx[g]+randn()*45,y:cy[g]+randn()*35,id:i});
+  }
+  return ps;
+}
+
+function clusterDist(a,b,link,allPts){
+  const pairs=[];
+  a.forEach(i=>b.forEach(j=>pairs.push(Math.hypot(allPts[i].x-allPts[j].x,allPts[i].y-allPts[j].y))));
+  if(link==='single') return Math.min(...pairs);
+  if(link==='complete') return Math.max(...pairs);
+  return pairs.reduce((s,v)=>s+v,0)/pairs.length;
+}
+
+function buildHistory(ps,link){
+  const history=[];
+  let active=ps.map((_,i)=>([i]));
+  const colors=ps.map((_,i)=>i);
+  while(active.length>1){
+    let best=Infinity,bi=-1,bj=-1;
+    for(let i=0;i<active.length;i++)
+      for(let j=i+1;j<active.length;j++){
+        const d=clusterDist(active[i],active[j],link,ps);
+        if(d<best){best=d;bi=i;bj=j;}
+      }
+    const merged=[...active[bi],...active[bj]];
+    const newColor=colors[active[bi][0]];
+    history.push({
+      merged,
+      absorbed:active[bj],
+      absorber:active[bi],
+      dist:best,
+      clustersBefore:active.map(c=>[...c]),
+      colorsBefore:[...colors],
+      activeAfter:active.filter((_,k)=>k!==bi&&k!==bj).concat([merged]),
+      colorsAfter:active.filter((_,k)=>k!==bi&&k!==bj).map(c=>colors[c[0]]).concat([newColor])
+    });
+    active=active.filter((_,k)=>k!==bi&&k!==bj).concat([merged]);
+    active.forEach(c=>c.forEach(i=>colors[i]=colors[c[0]]));
+  }
+  return history;
+}
+
+function colorAtStep(ptIdx,step){
+  if(step===0) return C[ptIdx%C.length];
+  const h=mergeHistory[step-1];
+  return C[h.colorsAfter[h.activeAfter.findIndex(c=>c.includes(ptIdx))]%C.length];
+}
+
+function renderScatter(step){
+  if(scatterChart)scatterChart.destroy();
+  const active=step===0?pts.map((_,i)=>[i]):mergeHistory[step-1].activeAfter;
+  const highlight=step>0?mergeHistory[step-1].merged:[];
+  const grid=isDark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.05)';
+  const tick=isDark?'#898781':'#898781';
+
+  const datasets=active.map((cl,ci)=>{
+    const col=C[ci%C.length];
+    const isNew=step>0&&highlight.length===cl.length&&cl.every(i=>highlight.includes(i));
+    return{
+      label:`C${ci}`,
+      data:cl.map(i=>({x:pts[i].x,y:pts[i].y})),
+      backgroundColor:col+'cc',
+      borderColor:isNew?'#fff':'transparent',
+      borderWidth:isNew?2:0,
+      pointRadius:isNew?8:6,
+      type:'scatter'
+    };
+  });
+
+  if(step>0){
+    const h=mergeHistory[step-1];
+    const cx=h.merged.reduce((s,i)=>s+pts[i].x,0)/h.merged.length;
+    const cy=h.merged.reduce((s,i)=>s+pts[i].y,0)/h.merged.length;
+    datasets.push({
+      label:'centroide',
+      data:[{x:cx,y:cy}],
+      pointStyle:'crossRot',
+      pointRadius:10,pointBorderWidth:2,
+      pointBorderColor:isDark?'rgba(255,255,255,0.5)':'rgba(0,0,0,0.3)',
+      backgroundColor:'transparent',type:'scatter'
+    });
+  }
+
+  scatterChart=new Chart(document.getElementById('scatterCv'),{
+    type:'scatter',data:{datasets},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:250},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`Point (${Math.round(ctx.raw.x)}, ${Math.round(ctx.raw.y)})`}}},
+      scales:{
+        x:{min:0,max:640,grid:{color:grid},ticks:{color:tick,font:{size:10},maxTicksLimit:5},border:{display:false}},
+        y:{min:0,max:300,grid:{color:grid},ticks:{color:tick,font:{size:10},maxTicksLimit:5},border:{display:false}}
+      }
+    }
+  });
+}
+
+function renderDendro(step){
+  if(dendroChart)dendroChart.destroy();
+  const grid=isDark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.05)';
+  const tick=isDark?'#898781':'#898781';
+  const lineCol=isDark?'rgba(255,255,255,0.15)':'rgba(0,0,0,0.1)';
+  const maxD=mergeHistory[mergeHistory.length-1]?.dist||1;
+
+  const totalSteps=mergeHistory.length;
+  const labels=pts.map((_,i)=>`p${i}`);
+
+  const leafX={};
+  pts.forEach((_,i)=>leafX[`l${i}`]=i);
+  const nodeX={};
+  const nodeY={};
+  mergeHistory.forEach((h,hi)=>{
+    const allLeaves=h.merged;
+    nodeX[hi]=allLeaves.reduce((s,i)=>s+i,0)/allLeaves.length;
+    nodeY[hi]=h.dist;
+  });
+
+  function getX(members,hi){
+    if(members.length===1)return members[0];
+    return nodeX[hi];
+  }
+
+  const segments=[];
+  mergeHistory.forEach((h,hi)=>{
+    const active=hi===0?pts.map((_,i)=>[i]):mergeHistory[hi-1].activeAfter;
+    const aIdx=active.findIndex(c=>c.length===h.absorber.length&&h.absorber.every(i=>c.includes(i)));
+    const bIdx=active.findIndex(c=>c.length===h.absorbed.length&&h.absorbed.every(i=>c.includes(i)));
+    const xA=h.absorber.reduce((s,i)=>s+i,0)/h.absorber.length;
+    const xB=h.absorbed.reduce((s,i)=>s+i,0)/h.absorbed.length;
+    const xM=(xA+xB)/2;
+    const yA=h.absorber.length===1?0:(()=>{for(let k=hi-1;k>=0;k--){if(mergeHistory[k].merged.length===h.absorber.length&&h.absorber.every(i=>mergeHistory[k].merged.includes(i)))return mergeHistory[k].dist;}return 0;})();
+    const yB=h.absorbed.length===1?0:(()=>{for(let k=hi-1;k>=0;k--){if(mergeHistory[k].merged.length===h.absorbed.length&&h.absorbed.every(i=>mergeHistory[k].merged.includes(i)))return mergeHistory[k].dist;}return 0;})();
+    const done=hi<step;
+    const col=done?(isDark?PAL_D[hi%PAL_D.length]:PAL[hi%PAL.length]):lineCol;
+    segments.push({xa:xA,ya:yA,xb:xB,yb:yB,xm:xM,ym:h.dist,col,done});
+  });
+
+  const lineDatasets=segments.flatMap((seg,si)=>[
+    {label:`v${si}a`,data:[{x:seg.xa,y:seg.ya},{x:seg.xa,y:seg.ym},{x:NaN,y:NaN}],
+      borderColor:seg.col,borderWidth:seg.done?2:1,pointRadius:0,fill:false,tension:0,type:'line',showLine:true,order:2},
+    {label:`v${si}b`,data:[{x:seg.xb,y:seg.yb},{x:seg.xb,y:seg.ym},{x:NaN,y:NaN}],
+      borderColor:seg.col,borderWidth:seg.done?2:1,pointRadius:0,fill:false,tension:0,type:'line',showLine:true,order:2},
+    {label:`h${si}`,data:[{x:seg.xa,y:seg.ym},{x:seg.xb,y:seg.ym},{x:NaN,y:NaN}],
+      borderColor:seg.col,borderWidth:seg.done?2:1,pointRadius:0,fill:false,tension:0,type:'line',showLine:true,order:2}
+  ]);
+
+  const leafDataset={
+    label:'Feuilles',
+    data:pts.map((_,i)=>({x:i,y:0})),
+    type:'scatter',pointRadius:4,
+    backgroundColor:pts.map((_,i)=>colorAtStep(i,step)+'dd'),
+    borderWidth:0,order:1
+  };
+
+  dendroChart=new Chart(document.getElementById('dendroCv'),{
+    type:'scatter',
+    data:{datasets:[...lineDatasets,leafDataset]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:250},
+      plugins:{legend:{display:false},tooltip:{filter:item=>item.dataset.label==='Feuilles',
+        callbacks:{label:ctx=>`Point ${ctx.dataIndex}`}}},
+      scales:{
+        x:{min:-0.5,max:N-0.5,grid:{color:grid},
+          ticks:{color:tick,font:{size:9},callback:(_,i)=>`p${i}`,maxTicksLimit:N},
+          border:{display:false}},
+        y:{min:0,max:maxD*1.15,title:{display:true,text:'Distance',color:tick,font:{size:10}},
+          grid:{color:grid},ticks:{color:tick,font:{size:9},maxTicksLimit:5,callback:v=>Math.round(v)},
+          border:{display:false}}
+      }
+    }
+  });
+}
+
+function updateMetrics(){
+  const nActive=stepIdx===0?N:(mergeHistory[stepIdx-1].activeAfter.length);
+  document.getElementById('mStep').textContent=stepIdx;
+  document.getElementById('mClusters').textContent=nActive;
+  document.getElementById('mDist').textContent=stepIdx>0?Math.round(mergeHistory[stepIdx-1].dist):'—';
+}
+
+function updateStatus(){
+  if(stepIdx===0){
+    document.getElementById('status').innerHTML='Chaque point est son propre cluster — cliquez sur <strong>Étape suivante</strong> pour fusionner les deux clusters les plus proches.';
+  } else if(stepIdx===mergeHistory.length){
+    document.getElementById('status').innerHTML=`<strong>Terminé !</strong> Tous les points sont dans un seul cluster après ${mergeHistory.length} fusions. Lisez le dendrogramme de bas en haut pour choisir le nombre de clusters souhaité.`;
+    document.getElementById('stepBtn').disabled=true;
+    if(autoTimer){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';}
+  } else {
+    const h=mergeHistory[stepIdx-1];
+    const link=document.getElementById('linkSelect').value;
+    document.getElementById('status').innerHTML=
+      `Fusion <strong>${stepIdx}</strong> — clusters de ${h.absorber.length} et ${h.absorbed.length} points réunis (distance ${link} = <strong>${Math.round(h.dist)}</strong>). Il reste <strong>${h.activeAfter.length}</strong> clusters.`;
+  }
+}
+
+function render(){
+  renderScatter(stepIdx);
+  renderDendro(stepIdx);
+  updateMetrics();
+  updateStatus();
+}
+
+function stepFwd(){
+  if(stepIdx>=mergeHistory.length)return;
+  stepIdx++;
+  render();
+}
+
+function toggleAuto(){
+  if(autoTimer){
+    clearInterval(autoTimer);autoTimer=null;
+    document.getElementById('autoIcon').className='ti ti-player-play';
+  } else {
+    autoTimer=setInterval(()=>{
+      if(stepIdx>=mergeHistory.length){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';return;}
+      stepFwd();
+    },900);
+    document.getElementById('autoIcon').className='ti ti-player-pause';
+  }
+}
+
+function resetAll(){
+  if(autoTimer){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';}
+  N=+document.getElementById('nSlider').value;
+  document.getElementById('stepBtn').disabled=false;
+  pts=genPts(N);
+  const link=document.getElementById('linkSelect').value;
+  mergeHistory=buildHistory(pts,link);
+  stepIdx=0;
+  render();
+}
+
+document.getElementById('nSlider').oninput=e=>{document.getElementById('nVal').textContent=e.target.value;};
+document.getElementById('linkSelect').onchange=resetAll;
+
+resetAll();
+</script>
