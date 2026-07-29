@@ -1,0 +1,288 @@
+
+<style>
+h2.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+.ctrl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;font-size:13px;color:var(--text-secondary)}
+.ctrl label{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+.metric{background:var(--surface-1);border-radius:var(--radius);padding:8px 12px}
+.metric .val{font-size:18px;font-weight:500;color:var(--text-primary)}
+.metric .lbl{font-size:11px;color:var(--text-muted);margin-top:2px}
+#status{font-size:12px;color:var(--text-secondary);margin-bottom:8px;min-height:18px;line-height:1.5}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary);margin-bottom:8px;align-items:center}
+.legend span{display:flex;align-items:center;gap:5px}
+.ldot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0}
+.lsq{width:10px;height:10px;border-radius:2px;display:inline-block;flex-shrink:0;border:2px solid}
+</style>
+
+<h2 class="sr-only">Visualisation interactive de DBSCAN — ajustez ε et minPts pour observer les clusters, les points de bruit et les points frontières</h2>
+
+<div class="ctrl">
+  <label>ε = <input type="range" id="epsSlider" min="15" max="90" value="45" step="1" style="width:80px"><strong id="epsVal">45</strong></label>
+  <label>minPts = <input type="range" id="minSlider" min="2" max="10" value="4" step="1" style="width:70px"><strong id="minVal">4</strong></label>
+  <label>Points : <input type="range" id="nSlider" min="60" max="180" value="110" step="10" style="width:70px"><strong id="nVal">110</strong></label>
+  <button onclick="resetAll()" style="margin-left:auto"><i class="ti ti-refresh" aria-hidden="true"></i> Réinitialiser</button>
+  <button id="stepBtn" onclick="stepFwd()"><i class="ti ti-arrow-right" aria-hidden="true"></i> Étape suivante</button>
+  <button id="autoBtn" onclick="toggleAuto()"><i class="ti ti-player-play" id="autoIcon" aria-hidden="true"></i> Auto</button>
+</div>
+
+<div class="metrics">
+  <div class="metric"><div class="val" id="mStep">—</div><div class="lbl">Point traité</div></div>
+  <div class="metric"><div class="val" id="mClusters">—</div><div class="lbl">Clusters trouvés</div></div>
+  <div class="metric"><div class="val" id="mNoise" style="color:#888">—</div><div class="lbl">Bruit</div></div>
+  <div class="metric"><div class="val" id="mCore">—</div><div class="lbl">Points cœur</div></div>
+</div>
+
+<div class="legend">
+  <span><span class="ldot" style="background:#2a78d6"></span>Cluster A</span>
+  <span><span class="ldot" style="background:#eb6834"></span>Cluster B…</span>
+  <span><span class="ldot" style="background:#888;opacity:.5"></span>Bruit</span>
+  <span><span class="lsq" style="border-color:#2a78d6"></span>Point cœur</span>
+  <span><span class="lsq" style="border-color:#aaa;background:transparent"></span>Frontière</span>
+  <span><span style="display:inline-block;width:32px;height:2px;border-top:2px dashed #aaa;vertical-align:middle"></span>Rayon ε</span>
+</div>
+
+<div id="status">Cliquez sur <strong>Étape suivante</strong> pour traiter le premier point non visité.</div>
+
+<div style="position:relative;width:100%;height:400px">
+  <canvas id="cv" role="img" aria-label="Scatter plot DBSCAN interactif"></canvas>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const isDark=matchMedia('(prefers-color-scheme:dark)').matches;
+const PAL=isDark?['#3987e5','#d95926','#199e70','#c98500','#d55181','#9085e9','#e66767']:['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#4a3aa7','#e34948'];
+const NOISE_COL=isDark?'rgba(160,158,150,0.45)':'rgba(100,100,95,0.35)';
+const W=640,H=380;
+
+let N=110,EPS=45,MINPTS=4;
+let pts=[],visited=[],clusterOf=[],isCore=[],phase=[],stepQueue=[],currentPt=-1,currentCluster=-1,nClusters=0,done=false;
+let chart=null,autoTimer=null,highlightCircle=null;
+
+function rng(a,b){return Math.random()*(b-a)+a;}
+function randn(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+
+function genPts(n){
+  const groups=Math.ceil(n/22)+1;
+  const cx=[],cy=[];
+  for(let i=0;i<groups;i++){cx.push(rng(70,W-70));cy.push(rng(60,H-60));}
+  const ps=[];
+  for(let i=0;i<n;i++){
+    if(i<Math.round(n*0.1)){ps.push({x:rng(20,W-20),y:rng(20,H-20)});continue;}
+    const g=Math.floor(Math.random()*groups);
+    ps.push({x:Math.max(5,Math.min(W-5,cx[g]+randn()*40)),y:Math.max(5,Math.min(H-5,cy[g]+randn()*32))});
+  }
+  return ps;
+}
+
+function neighbors(idx){
+  return pts.map((_,j)=>j).filter(j=>j!==idx&&Math.hypot(pts[j].x-pts[idx].x,pts[j].y-pts[idx].y)<=EPS);
+}
+
+function precompute(){
+  isCore=pts.map((_,i)=>neighbors(i).length>=MINPTS-1);
+}
+
+function initState(){
+  visited=new Array(N).fill(false);
+  clusterOf=new Array(N).fill(-1);
+  phase=new Array(N).fill('unvisited');
+  stepQueue=pts.map((_,i)=>i);
+  currentPt=-1;currentCluster=-1;nClusters=0;done=false;
+  highlightCircle=null;
+}
+
+function dbscanStep(){
+  if(done) return;
+  while(stepQueue.length>0){
+    const idx=stepQueue.shift();
+    if(visited[idx]) continue;
+    visited[idx]=true;
+    currentPt=idx;
+    const nbrs=neighbors(idx);
+    if(!isCore[idx]){
+      phase[idx]='noise';
+      clusterOf[idx]=-1;
+      updateUI(idx,nbrs,'noise');
+      return;
+    }
+    nClusters++;
+    currentCluster=nClusters-1;
+    expandCluster(idx,nbrs,currentCluster);
+    updateUI(idx,nbrs,'core-expand');
+    return;
+  }
+  done=true;
+  document.getElementById('stepBtn').disabled=true;
+  if(autoTimer){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';}
+  highlightCircle=null;
+  const noiseCount=clusterOf.filter(c=>c===-1).length;
+  const coreCount=isCore.filter(Boolean).length;
+  document.getElementById('status').innerHTML=`<strong>Terminé !</strong> ${nClusters} cluster(s) trouvé(s), ${noiseCount} point(s) bruit, ${coreCount} point(s) cœur.`;
+  document.getElementById('mClusters').textContent=nClusters;
+  document.getElementById('mNoise').textContent=noiseCount;
+  document.getElementById('mCore').textContent=coreCount;
+  renderChart();
+}
+
+function expandCluster(seedIdx,nbrs,cid){
+  clusterOf[seedIdx]=cid;
+  phase[seedIdx]='core';
+  const queue=[...nbrs];
+  const inQueue=new Set(queue);
+  while(queue.length>0){
+    const q=queue.shift();
+    if(!visited[q]){
+      visited[q]=true;
+      const qn=neighbors(q);
+      if(isCore[q]){
+        qn.forEach(r=>{if(!inQueue.has(r)&&!visited[r]){queue.push(r);inQueue.add(r);}});
+      }
+    }
+    if(clusterOf[q]===-1||!visited[q]){
+      clusterOf[q]=cid;
+      phase[q]=isCore[q]?'core':'border';
+    }
+  }
+}
+
+function updateUI(idx,nbrs,type){
+  const noiseCount=clusterOf.filter(c=>c===-1&&phase[_i=>true]).length;
+  const coreCount=phase.filter(p=>p==='core').length;
+  document.getElementById('mStep').textContent=`${pts.indexOf(pts[idx])+1}/${N}`;
+  document.getElementById('mClusters').textContent=nClusters||'—';
+  document.getElementById('mNoise').textContent=phase.filter(p=>p==='noise').length||'—';
+  document.getElementById('mCore').textContent=phase.filter(p=>p==='core').length||'—';
+  highlightCircle={x:pts[idx].x,y:pts[idx].y,r:EPS};
+  if(type==='noise'){
+    document.getElementById('status').innerHTML=`Point ${idx+1} : seulement ${nbrs.length} voisin(s) dans ε → <strong style="color:#888">bruit</strong> (min requis : ${MINPTS}).`;
+  } else {
+    document.getElementById('status').innerHTML=`Point ${idx+1} : <strong>${nbrs.length+1} voisin(s)</strong> dans ε → <strong style="color:${PAL[currentCluster%PAL.length]}">point cœur</strong>, cluster ${currentCluster+1} étendu.`;
+  }
+  renderChart();
+}
+
+function buildDatasets(){
+  const byCluster=Array.from({length:Math.max(nClusters,1)},()=>({core:[],border:[]}));
+  const noise=[];
+  const unvisited=[];
+
+  pts.forEach((p,i)=>{
+    if(phase[i]==='unvisited'){unvisited.push({x:p.x,y:p.y});return;}
+    if(phase[i]==='noise'){noise.push({x:p.x,y:p.y});return;}
+    const c=clusterOf[i];
+    if(c<0){noise.push({x:p.x,y:p.y});return;}
+    if(!byCluster[c])byCluster[c]={core:[],border:[]};
+    if(phase[i]==='core') byCluster[c].core.push({x:p.x,y:p.y});
+    else byCluster[c].border.push({x:p.x,y:p.y});
+  });
+
+  const ds=[];
+
+  ds.push({label:'Non visités',data:unvisited,type:'scatter',
+    pointRadius:4,backgroundColor:isDark?'rgba(200,200,190,0.2)':'rgba(80,80,75,0.18)',borderWidth:0,order:3});
+
+  noise.forEach((p,i)=>{
+    if(i===0) ds.push({label:'Bruit',data:noise,type:'scatter',
+      pointRadius:4,backgroundColor:NOISE_COL,borderWidth:0,order:3});
+  });
+  if(!noise.length) ds.push({label:'Bruit',data:[],type:'scatter',pointRadius:0,backgroundColor:NOISE_COL,borderWidth:0});
+
+  byCluster.forEach((cl,ci)=>{
+    const col=PAL[ci%PAL.length];
+    if(cl.core.length) ds.push({label:`C${ci} cœur`,data:cl.core,type:'scatter',
+      pointRadius:7,pointStyle:'rectRounded',
+      backgroundColor:col+'55',borderColor:col,borderWidth:2,order:2});
+    if(cl.border.length) ds.push({label:`C${ci} bord`,data:cl.border,type:'scatter',
+      pointRadius:5,backgroundColor:col+'88',
+      borderColor:isDark?'rgba(255,255,255,0.25)':'rgba(0,0,0,0.2)',borderWidth:1,order:2});
+  });
+
+  if(currentPt>=0&&!done){
+    ds.push({label:'Actif',data:[{x:pts[currentPt].x,y:pts[currentPt].y}],type:'scatter',
+      pointRadius:10,pointStyle:'star',
+      backgroundColor:'transparent',
+      borderColor:isDark?'#fff':'#111',borderWidth:2.5,order:0});
+  }
+
+  return ds;
+}
+
+const epsCirclePlugin={
+  id:'epsCircle',
+  afterDatasetsDraw(ch){
+    if(!highlightCircle||done) return;
+    const {ctx,scales:{x,y}}=ch;
+    const cx=x.getPixelForValue(highlightCircle.x);
+    const cy=y.getPixelForValue(highlightCircle.y);
+    const r=Math.abs(x.getPixelForValue(highlightCircle.x+highlightCircle.r)-cx);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.setLineDash([5,4]);
+    ctx.strokeStyle=isDark?'rgba(255,255,255,0.25)':'rgba(0,0,0,0.2)';
+    ctx.lineWidth=1.2;
+    ctx.stroke();
+    ctx.fillStyle=isDark?'rgba(255,255,255,0.04)':'rgba(0,0,0,0.04)';
+    ctx.fill();
+    ctx.restore();
+  }
+};
+
+function renderChart(){
+  if(chart)chart.destroy();
+  const grid=isDark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.05)';
+  const tick=isDark?'#898781':'#898781';
+  chart=new Chart(document.getElementById('cv'),{
+    type:'scatter',
+    data:{datasets:buildDatasets()},
+    plugins:[epsCirclePlugin],
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:200},
+      plugins:{legend:{display:false},
+        tooltip:{filter:i=>i.dataset.label!=='Non visités',
+          callbacks:{label:ctx=>{
+            const l=ctx.dataset.label;
+            if(l==='Bruit') return 'Bruit (hors cluster)';
+            if(l==='Actif') return 'Point en cours de traitement';
+            return l.includes('cœur')?`Cœur — ${l}`:`Frontière — ${l}`;
+          }}}
+      },
+      scales:{
+        x:{min:0,max:W,grid:{color:grid},ticks:{color:tick,font:{size:10},maxTicksLimit:6},border:{display:false}},
+        y:{min:0,max:H,grid:{color:grid},ticks:{color:tick,font:{size:10},maxTicksLimit:5},border:{display:false}}
+      }
+    }
+  });
+}
+
+function stepFwd(){if(!done)dbscanStep();}
+
+function toggleAuto(){
+  if(autoTimer){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';}
+  else{autoTimer=setInterval(()=>{if(done){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';return;}stepFwd();},300);
+    document.getElementById('autoIcon').className='ti ti-player-pause';}
+}
+
+function resetAll(){
+  if(autoTimer){clearInterval(autoTimer);autoTimer=null;document.getElementById('autoIcon').className='ti ti-player-play';}
+  N=+document.getElementById('nSlider').value;
+  EPS=+document.getElementById('epsSlider').value;
+  MINPTS=+document.getElementById('minSlider').value;
+  pts=genPts(N);
+  precompute();
+  initState();
+  document.getElementById('stepBtn').disabled=false;
+  document.getElementById('mStep').textContent='—';
+  document.getElementById('mClusters').textContent='—';
+  document.getElementById('mNoise').textContent='—';
+  document.getElementById('mCore').textContent='—';
+  document.getElementById('status').innerHTML='Cliquez sur <strong>Étape suivante</strong> pour traiter le premier point non visité.';
+  renderChart();
+}
+
+document.getElementById('epsSlider').oninput=e=>{document.getElementById('epsVal').textContent=e.target.value;EPS=+e.target.value;precompute();resetAll();};
+document.getElementById('minSlider').oninput=e=>{document.getElementById('minVal').textContent=e.target.value;MINPTS=+e.target.value;precompute();resetAll();};
+document.getElementById('nSlider').oninput=e=>{document.getElementById('nVal').textContent=e.target.value;};
+
+resetAll();
+</script>
